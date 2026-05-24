@@ -90,10 +90,23 @@ input.catname:focus{background:var(--bg3);border-color:var(--acc)}
 </style>
 </head>
 <body>
+
+<div id="loading" style="
+display:flex;
+align-items:center;
+justify-content:center;
+height:100vh;
+background:#0D1B2A;
+color:white;
+font-size:18px;
+font-family:sans-serif;
+">
+  Cargando aplicación...
+</div>
 <!-- Firebase SDK -->
-<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-auth.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-database.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-database-compat.js"></script>
 
 <script>
 // Firebase Configuration
@@ -239,22 +252,47 @@ function updateSyncDot() {
 }
 
 // ===================== AUTH =====================
-auth.onAuthStateChanged(user => {
+auth.onAuthStateChanged(async user => {
+
+  document.getElementById("loading").style.display = "none";
+
   console.log("Auth state changed:", user);
+
   if (user) {
+
     usuarioActual = user;
+
     document.getElementById("loginForm").style.display = "none";
     document.getElementById("app").style.display = "block";
-    document.getElementById("userEmail").textContent = user.email;
-    loadFromCloud();
+
+    await loadFromCloud();
+
     render();
+
+    setTimeout(() => {
+      const userEmailEl = document.getElementById("userEmail");
+      if(userEmailEl){
+        userEmailEl.textContent = user.email;
+      }
+    }, 50);
+
   } else {
+
     usuarioActual = null;
+
     document.getElementById("loginForm").style.display = "flex";
     document.getElementById("app").style.display = "none";
   }
 });
+document.addEventListener("keydown", e => {
 
+  const loginVisible =
+    document.getElementById("loginForm").style.display !== "none";
+
+  if(e.key === "Enter" && loginVisible){
+    login();
+  }
+});
 function login() {
   const email = document.getElementById("email").value.trim();
   const password = document.getElementById("password").value;
@@ -280,24 +318,48 @@ function login() {
     });
 }
 
-function logout() {
+window.logout = function() {
   auth.signOut();
 }
 
 async function loadFromCloud() {
+
   if(!usuarioActual) return;
+
   try {
-    const snapshot = await db.ref('users/' + usuarioActual.uid + '/data').once('value');
+
+    SYNC_STATUS = "syncing";
+    updateSyncDot();
+
+    const snapshot = await db
+      .ref('users/' + usuarioActual.uid + '/data')
+      .once('value');
+
     const cloudData = snapshot.val();
+
     if(cloudData) {
+
       applyData(cloudData);
+
       console.log("Datos cargados desde Firebase");
+
     } else {
+
       console.log("Sin datos en Firebase, usando datos por defecto");
+
+      await saveToCloud(S);
     }
+
+    SYNC_STATUS = "ok";
+
   } catch(e) {
+
     console.log("Error loading from cloud", e);
+
+    SYNC_STATUS = "err";
   }
+
+  updateSyncDot();
 }
 
 // ===================== UTILS =====================
@@ -453,7 +515,7 @@ function buildApp(){
       h("span",{style:{fontSize:"12px",color:"var(--txt2)"}},"Usuario: "),
       h("span",{id:"userEmail",style:{fontWeight:"600",color:"var(--acc2)"}},""),
       h("div",{class:"sync-bar"},h("span",{id:"sync-dot",class:"sync-dot"},""),h("span",{id:"sync-lbl",style:{color:"var(--pos)"}},"Guardado ✓")),
-      h("button",{class:"btn btn-sec",style:{fontSize:"11px",padding:"3px 10px"},onclick:"logout()"},"Cerrar Sesión")
+      h("button",{class:"btn btn-sec",style:{fontSize:"11px",padding:"3px 10px"},onclick:"window.logout()"},"Cerrar Sesión")
     )
   );
   wrap.appendChild(hdr);
