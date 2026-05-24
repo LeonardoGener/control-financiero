@@ -90,8 +90,6 @@ input.catname:focus{background:var(--bg3);border-color:var(--acc)}
 </style>
 </head>
 <body>
-<div id="root"></div>
-
 <!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-auth.js"></script>
@@ -226,6 +224,7 @@ async function saveToCloud(data) {
     await db.ref('users/' + uid + '/data').set(data);
     SYNC_STATUS = "ok";
   } catch(e) {
+    console.error("Error saving:", e);
     SYNC_STATUS = "err";
   }
   updateSyncDot();
@@ -241,12 +240,14 @@ function updateSyncDot() {
 
 // ===================== AUTH =====================
 auth.onAuthStateChanged(user => {
+  console.log("Auth state changed:", user);
   if (user) {
     usuarioActual = user;
-    loadFromCloud();
     document.getElementById("loginForm").style.display = "none";
     document.getElementById("app").style.display = "block";
     document.getElementById("userEmail").textContent = user.email;
+    loadFromCloud();
+    render();
   } else {
     usuarioActual = null;
     document.getElementById("loginForm").style.display = "flex";
@@ -255,7 +256,7 @@ auth.onAuthStateChanged(user => {
 });
 
 function login() {
-  const email = document.getElementById("email").value;
+  const email = document.getElementById("email").value.trim();
   const password = document.getElementById("password").value;
   const errorDiv = document.getElementById("loginError");
 
@@ -264,13 +265,17 @@ function login() {
     return;
   }
 
+  errorDiv.textContent = "Ingresando...";
+  
   auth.signInWithEmailAndPassword(email, password)
     .then(userCredential => {
+      console.log("Login exitoso:", userCredential.user.email);
       errorDiv.textContent = "";
       document.getElementById("email").value = "";
       document.getElementById("password").value = "";
     })
     .catch(error => {
+      console.error("Error de login:", error.code, error.message);
       errorDiv.textContent = "Error: " + error.message;
     });
 }
@@ -286,7 +291,9 @@ async function loadFromCloud() {
     const cloudData = snapshot.val();
     if(cloudData) {
       applyData(cloudData);
-      render();
+      console.log("Datos cargados desde Firebase");
+    } else {
+      console.log("Sin datos en Firebase, usando datos por defecto");
     }
   } catch(e) {
     console.log("Error loading from cloud", e);
@@ -304,50 +311,14 @@ function mesIdx(){return S.mes==="Todos"?-1:S.months.indexOf(S.mes);}
 function mesesRange(){return S.mes==="Todos"?S.months:[S.mes];}
 function chequeClass(d){if(d<0)return"c-rojo";if(d<=7)return"c-naranja";if(d<=15)return"c-amarillo";return"c-verde";}
 function diasColor(d){if(d<0)return"var(--neg)";if(d<=7)return"var(--ora)";if(d<=15)return"var(--warn)";return"var(--pos)";}
-function addBusinessDays(dateStr,days){
-  const d=new Date(dateStr+"T12:00:00");let added=0;
-  while(added<days){d.setDate(d.getDate()+1);const dow=d.getDay();if(dow!==0&&dow!==6)added++;}
-  return d.toISOString().split("T")[0];
-}
-function brunellaDesc(){
-  const t={};
-  S.brunella.forEach(b=>{if(!t[b.mes])t[b.mes]=0;t[b.mes]+=pn(b.precio)*0.8*pn(b.cantidad);});
-  return t;
-}
-function cuponesProjection(){
-  const hoy=new Date().toISOString().split("T")[0];const all=[];
-  S.terminales.forEach(t=>{t.cupones.forEach(c=>{all.push({...c,terminal:t.nombre,acreditado:c.fechaAcred<=hoy});});});
-  return all.sort((a,b)=>a.fechaAcred.localeCompare(b.fechaAcred));
-}
-function cuponesPendientes(){
-  const hoy=new Date().toISOString().split("T")[0];
-  return S.terminales.reduce((s,t)=>s+t.cupones.filter(c=>c.fechaAcred>hoy).reduce((ss,c)=>ss+c.monto,0),0);
-}
 function calcTotals(){
-  const mr=mesesRange();const bd=brunellaDesc();
+  const mr=mesesRange();
   const sum=(arr,fn)=>arr.reduce((s,r)=>mr.reduce((ss,m)=>ss+fn(r,m),s),0);
   const totalIng=sum(S.ing,(r,m)=>r.vals[S.months.indexOf(m)]||0);
   const totalGP=sum(S.gp,(r,m)=>r.vals[S.months.indexOf(m)]||0);
-  const totalGL=sum(S.gl,(r,m)=>{const i=S.months.indexOf(m);let v=r.vals[i]||0;if(r.cat==="Sueldo Brunella")v=Math.max(0,v-(bd[m]||0));return v;});
-  const pagadoGP=sum(S.gp,(r,m)=>{const v=r.vals[S.months.indexOf(m)]||0;return(S.spGP[r.cat]?.[m]==="PAGADO")?v:0;});
-  const pagadoGL=sum(S.gl,(r,m)=>{const i=S.months.indexOf(m);let v=r.vals[i]||0;if(r.cat==="Sueldo Brunella")v=Math.max(0,v-(bd[m]||0));return(S.spGL[r.cat]?.[m]==="PAGADO")?v:0;});
-  const totalPagado=pagadoGP+pagadoGL;const totalPend=(totalGP+totalGL)-totalPagado;
-  return{totalIng,totalGP,totalGL,neto:totalIng-totalGP-totalGL,liquido:totalIng-totalPagado,totalPagado,totalPend};
-}
-function chequesUrgentes(){
-  const now=new Date();
-  return S.echeques.map(e=>({...e,dias:Math.ceil((new Date(e.fechaPago)-now)/864e5)})).filter(e=>e.dias<=15).sort((a,b)=>a.dias-b.dias);
-}
-function alertasVcto(){
-  const today=new Date();const alerts=[];
-  S.gp.forEach(r=>{
-    if(!r.vcto)return;const day=parseInt(r.vcto);if(!day)return;
-    const vctoDate=new Date(today.getFullYear(),today.getMonth(),day);
-    if(vctoDate<today)vctoDate.setMonth(vctoDate.getMonth()+1);
-    const diff=Math.ceil((vctoDate-today)/864e5);
-    if(diff<=3)alerts.push({cat:r.cat,dia:day,diff});
-  });
-  return alerts;
+  const totalGL=sum(S.gl,(r,m)=>r.vals[S.months.indexOf(m)]||0);
+  const neto=totalIng-totalGP-totalGL;
+  return{totalIng,totalGP,totalGL,neto};
 }
 
 // ===================== RENDER ENGINE =====================
@@ -373,23 +344,12 @@ function render(){
 
 // ===================== DASHBOARD =====================
 function buildDashboard(t){
-  const d=h("div",null);const pendTarjeta=cuponesPendientes();
+  const d=h("div",null);
   const kpis=[
     {lbl:"Ingresos Totales",val:t.totalIng,cls:"pos"},{lbl:"Gastos Personales",val:t.totalGP,cls:"neg"},
     {lbl:"Gastos Local",val:t.totalGL,cls:"neg"},{lbl:"Resultado Neto",val:t.neto,cls:t.neto>=0?"pos":"neg"},
-    {lbl:"Dinero Líquido",val:t.liquido,cls:"neu"},{lbl:"Total Pagado",val:t.totalPagado,cls:"yel"},
-    {lbl:"Pendiente Gastos",val:t.totalPend,cls:"neg"},{lbl:"Tarjeta Pendiente",val:pendTarjeta,cls:"pur"},
   ];
   d.appendChild(h("div",{class:"kpi-grid"},...kpis.map(k=>h("div",{class:"kpi"},h("div",{class:"kpi-lbl"},k.lbl),h("div",{class:`kpi-val ${k.cls}`},fmt(k.val))))));
-  const vctoAlerts=alertasVcto();
-  if(vctoAlerts.length>0){
-    d.appendChild(h("div",{class:"card",style:{borderColor:"var(--neg)",background:"#7f1d1d15",marginBottom:"10px"}},
-      h("div",{class:"sec-title",style:{color:"var(--neg)"}},"🔴 Vencimiento Tarjetas"),
-      ...vctoAlerts.map(a=>h("div",{class:"alert-row c-rojo"},
-        h("span",{style:{flex:"1",fontWeight:"600"}},a.cat),
-        h("span",{style:{color:"var(--neg)",fontWeight:"700"}},a.diff===0?"HOY":a.diff===1?"Mañana":"En "+a.diff+" días")))
-    ));
-  }
   return d;
 }
 
@@ -409,7 +369,7 @@ function buildGP(){
     mr.forEach(m=>{
       const i=S.months.indexOf(m);const v=r.vals[i]||0;rowTotal+=v;
       const inp=h("input",{type:"number","class":"cell",value:v||"",placeholder:"0"});
-      on(inp,"change",e=>{S.gp[ri].vals[i]=pn(e.target.value);save();render();});
+      on(inp,"change",e=>{S.gp[ri].vals[i]=pn(e.target.value);save();});
       tr.appendChild(h("td",{style:{textAlign:"right"}},inp));
     });
     tr.appendChild(h("td",{style:{textAlign:"right",color:"var(--neg)",fontWeight:"700"}},fmt(rowTotal)));
@@ -439,7 +399,7 @@ function buildGL(){
     mr.forEach(m=>{
       const i=S.months.indexOf(m);const v=r.vals[i]||0;rowTotal+=v;
       const inp=h("input",{type:"number","class":"cell",value:v||"",placeholder:"0"});
-      on(inp,"change",e=>{S.gl[ri].vals[i]=pn(e.target.value);save();render();});
+      on(inp,"change",e=>{S.gl[ri].vals[i]=pn(e.target.value);save();});
       tr.appendChild(h("td",{style:{textAlign:"right"}},inp));
     });
     tr.appendChild(h("td",{style:{textAlign:"right",color:"var(--neg)",fontWeight:"700"}},fmt(rowTotal)));
@@ -467,7 +427,7 @@ function buildIng(){
     let rowTotal=0;
     mr.forEach(m=>{const i=S.months.indexOf(m);const v=r.vals[i]||0;rowTotal+=v;
       const inp=h("input",{type:"number","class":"cell",value:v||"",placeholder:"0"});
-      on(inp,"change",e=>{S.ing[ri].vals[i]=pn(e.target.value);save();render();});
+      on(inp,"change",e=>{S.ing[ri].vals[i]=pn(e.target.value);save();});
       tr.appendChild(h("td",{style:{textAlign:"right"}},inp));
     });
     tr.appendChild(h("td",{style:{textAlign:"right",color:"var(--pos)",fontWeight:"700"}},fmt(rowTotal)));tbody.appendChild(tr);
@@ -512,9 +472,6 @@ function buildApp(){
   wrap.appendChild(content);
   return wrap;
 }
-
-// Initial render
-render();
 </script>
 
 <div id="loginForm" class="login-wrap">
@@ -524,7 +481,7 @@ render();
     <p>Ingresá con tu usuario y contraseña</p>
     <input type="email" id="email" placeholder="tu@email.com">
     <input type="password" id="password" placeholder="••••••••">
-    <button onclick="login()">Ingresar</button>
+    <button type="button" onclick="login()">Ingresar</button>
     <div id="loginError" class="login-err"></div>
   </div>
 </div>
