@@ -27,7 +27,7 @@ function on(el, ev, fn) { el.addEventListener(ev, fn); return el; }
 // ── Render principal ──────────────────────────────────────
 function render() {
   const appEl = document.getElementById("app");
-  if (!appEl || !usuarioActual) return;
+  if (!appEl) return;
   appEl.innerHTML = "";
   appEl.appendChild(buildApp());
 }
@@ -359,7 +359,7 @@ function buildGP() {
 
     const vctoInp = h("input", { type:"number", class:"cell", placeholder:"—", min:"1", max:"31",
       value:r.vcto||"", style:{ width:"52px", textAlign:"center" } });
-    on(vctoInp, "change", e => { S.gp[ri].vcto = e.target.value; save(); });
+    on(vctoInp, "input", e => { S.gp[ri].vcto = e.target.value; save(); });
 
     const tr = h("tr", null,
       h("td", null, catInp),
@@ -374,11 +374,11 @@ function buildGP() {
       const st = S.spGP[r.cat]?.[m] || "PENDIENTE";
 
       const inp = h("input", { type:"number", class:"cell", value:v||"", placeholder:"0" });
-      on(inp, "change", e => {
+      on(inp, "input", e => {
         S.gp[ri].vals[i] = pn(e.target.value);
         if (!S.spGP[r.cat]) S.spGP[r.cat] = {};
         if (pn(e.target.value) > 0 && !S.spGP[r.cat][m]) S.spGP[r.cat][m] = "PENDIENTE";
-        save(); render();
+        save();
       });
 
       const sbtn = h("button", {
@@ -506,11 +506,11 @@ function buildGL() {
       const st   = S.spGL[r.cat]?.[m] || "PENDIENTE";
 
       const inp = h("input", { type:"number", class:"cell", value:v||"", placeholder:"0" });
-      on(inp, "change", e => {
+      on(inp, "input", e => {
         S.gl[ri].vals[i] = pn(e.target.value);
         if (!S.spGL[r.cat]) S.spGL[r.cat] = {};
         if (pn(e.target.value) > 0 && !S.spGL[r.cat][m]) S.spGL[r.cat][m] = "PENDIENTE";
-        save(); render();
+        save();
       });
 
       const sbtn = h("button", {
@@ -597,7 +597,7 @@ function buildIng() {
       const v = r.vals[i] || 0;
       rowTotal += v;
       const inp = h("input", { type:"number", class:"cell", value:v||"", placeholder:"0" });
-      on(inp, "change", e => { S.ing[ri].vals[i] = pn(e.target.value); save(); render(); });
+      on(inp, "input", e => { S.ing[ri].vals[i] = pn(e.target.value); save(); });
       tr.appendChild(h("td", { class:"ta-right" }, inp));
     });
     tr.appendChild(h("td", { class:"ta-right", style:{ fontWeight:"700", color:"var(--pos)" } }, fmt(rowTotal)));
@@ -631,7 +631,7 @@ function buildTerm() {
     const box = h("div", { class:"terminal-config-item" });
     box.appendChild(h("div", { class:"terminal-config-name" }, t.nombre));
     const inp1 = h("input", { type:"number", value:t.diasHab });
-    on(inp1, "change", e => { S.terminales[ti].diasHab = pn(e.target.value); save(); render(); });
+    on(inp1, "input", e => { S.terminales[ti].diasHab = pn(e.target.value); save(); });
     box.appendChild(h("div", { class:"form-row", style:{ padding:"0", background:"transparent", border:"none", margin:"0" } },
       h("div", { class:"f" },
         h("label", null, "Días hábiles hasta acreditación"),
