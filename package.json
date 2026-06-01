@@ -1,0 +1,30 @@
+{
+  "name": "control-financiero",
+  "version": "1.0.0",
+  "description": "Control Financiero Personal y Negocio",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist":  "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron":         "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId":       "com.controlfinanciero.app",
+    "productName": "Control Financiero",
+    "copyright":   "Copyright 2024",
+    "files": ["**/*", "!node_modules/**/*.md"],
+    "win": {
+      "target": [{ "target":"nsis", "arch":["x64"] }],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

@@ -1,22 +1,25 @@
 /* ============================================================
-   firebase.js — Firebase Auth + Sync + Persistencia Local Robusta
+   firebase.js — Auth + Persistencia 3 capas + Seguridad
    
-   ARQUITECTURA DE GUARDADO (3 capas):
-   
-   1. localStorage PRIMARIO  → guarda SIEMPRE, sin login, sin internet
-   2. localStorage BACKUP    → copia rotativa del guardado anterior
-   3. Firebase Realtime DB   → sync en la nube (solo si hay login)
-   
-   La app funciona completamente sin Firebase/internet.
-   Firebase es sync adicional, no un requisito.
+   ARQUITECTURA:
+   1. localStorage PRIMARIO  → guarda siempre, sin login
+   2. localStorage BACKUP    → copia rotativa anti-corrupción
+   3. Firebase Realtime DB   → sync cloud (requiere login)
+
+   SEGURIDAD:
+   - Rate limiting en login (3 intentos, bloqueo 60s)
+   - sanitizeForFirebase() elimina undefined antes de .set()
+   - No expone UID ni datos sensibles en consola en producción
+   - Tokens de sesión se limpian al hacer logout
    ============================================================ */
+"use strict";
 
-// ── Claves de localStorage ────────────────────────────────
-const LS_KEY  = "CF_DATA_V1";      // datos principales
-const LS_BAK  = "CF_DATA_V1_BAK";  // backup rotativo
-const LS_META = "CF_META_V1";      // metadatos (timestamp)
+// ── Claves de almacenamiento ──────────────────────────────
+const LS_KEY  = "CF_DATA_V2";
+const LS_BAK  = "CF_DATA_V2_BAK";
+const LS_META = "CF_META_V2";
 
-// ── Config Firebase ───────────────────────────────────────
+// ── Firebase config ───────────────────────────────────────
 const firebaseConfig = {
   apiKey:            "AIzaSyC-eLP28-62ODX1L-TdTtryH-4nKk68_Ek",
   authDomain:        "controlfinanciero-25850.firebaseapp.com",
@@ -33,30 +36,82 @@ const db   = firebase.database();
 
 // ── Estado de sesión ──────────────────────────────────────
 let usuarioActual = null;
-let SYNC_STATUS   = "local";  // "local" | "syncing" | "ok" | "err"
+let SYNC_STATUS   = "local";
 let SAVE_TIMER    = null;
 let FIREBASE_OK   = false;
 
+// ── Rate limiting para login ──────────────────────────────
+const LOGIN_MAX_ATTEMPTS = 3;
+const LOGIN_LOCKOUT_MS   = 60 * 1000; // 60 segundos
+let loginAttempts  = 0;
+let loginLockedAt  = null;
+
 // ================================================================
-//  CAPA 1: localStorage — sin condiciones, siempre activo
+//  SEGURIDAD: sanitizar objeto antes de enviar a Firebase
+//  Firebase Realtime DB rechaza:
+//  - valores undefined
+//  - keys con . # $ / [ ]
+//  - keys vacíos
 // ================================================================
 
+// Convierte un key de categoría a un key válido para Firebase
+// Ej: "Otros Pers." → "Otros_Pers_"
+//     "Galicia — Total Mensual" → "Galicia___Total_Mensual"
+function sanitizeKey(k) {
+  return String(k)
+    .replace(/\./g,  "_")   // punto → guión bajo
+    .replace(/#/g,   "_")   // hash
+    .replace(/\$/g,  "_")   // dólar
+    .replace(/\//g,  "_")   // barra
+    .replace(/\[/g,  "_")   // corchete abre
+    .replace(/\]/g,  "_");  // corchete cierra
+}
+
+function sanitizeForFirebase(obj) {
+  if (obj === null || obj === undefined) return null;
+  if (typeof obj !== "object")           return obj;
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeForFirebase(item));
+  }
+  const clean = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined) continue;     // omitir undefined
+    if (k.startsWith("_")) continue;   // omitir campos internos
+    if (k === "") continue;            // omitir keys vacíos
+    const safeKey = sanitizeKey(k);
+    clean[safeKey] = sanitizeForFirebase(v);
+  }
+  return clean;
+}
+
+// ================================================================
+//  CAPA 1: localStorage robusto
+// ================================================================
 function saveLocal(data) {
   try {
     const payload = JSON.stringify({
-      version:   3,
+      version:   4,
       timestamp: Date.now(),
       data:      data
     });
     // Rotar backup antes de pisar
     const prev = localStorage.getItem(LS_KEY);
     if (prev) localStorage.setItem(LS_BAK, prev);
-
     localStorage.setItem(LS_KEY, payload);
     localStorage.setItem(LS_META, JSON.stringify({ lastSave: Date.now() }));
     return true;
   } catch (e) {
-    console.error("CF localStorage error:", e);
+    // Puede fallar si localStorage está lleno (QuotaExceededError)
+    console.error("CF: error guardando localStorage:", e.name);
+    if (e.name === "QuotaExceededError") {
+      // Intentar liberar espacio eliminando el backup
+      try { localStorage.removeItem(LS_BAK); } catch (_) {}
+      // Reintentar
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify({ version:4, timestamp:Date.now(), data }));
+        return true;
+      } catch (_) { return false; }
+    }
     return false;
   }
 }
@@ -67,32 +122,36 @@ function loadLocal() {
       const raw = localStorage.getItem(key);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
-      if (!parsed || !parsed.data) return null;
-      console.log("CF: datos cargados desde " + key + " — guardado el", new Date(parsed.timestamp).toLocaleString("es-AR"));
+      if (!parsed || typeof parsed.data !== "object") return null;
       return parsed.data;
     } catch (e) {
-      console.warn("CF: datos corruptos en " + key + ", descartando", e);
+      console.warn("CF: datos corruptos en", key, "— descartando");
+      try { localStorage.removeItem(key); } catch (_) {}
       return null;
     }
   };
-  // Primario → backup
   return tryParse(LS_KEY) || tryParse(LS_BAK);
 }
 
 // ================================================================
-//  CAPA 2: Firebase — solo si hay login
+//  CAPA 2: Firebase
 // ================================================================
-
 async function saveToCloud(data) {
   if (!usuarioActual || !FIREBASE_OK) return;
   SYNC_STATUS = "syncing";
   updateSyncDot();
   try {
-    await db.ref("users/" + usuarioActual.uid + "/data").set(data);
+    // BUG FIX: sanitizar antes de enviar a Firebase
+    const safe = sanitizeForFirebase(data);
+    await db.ref("users/" + usuarioActual.uid + "/data").set(safe);
     SYNC_STATUS = "ok";
   } catch (e) {
-    console.error("CF Firebase save error:", e);
+    console.error("CF: error Firebase save:", e.code || e.message);
     SYNC_STATUS = "err";
+    // Reintentar una vez tras 3 segundos
+    setTimeout(() => {
+      if (usuarioActual && FIREBASE_OK) saveToCloud(S);
+    }, 3000);
   }
   updateSyncDot();
 }
@@ -107,29 +166,29 @@ async function loadFromCloud() {
     FIREBASE_OK = true;
 
     if (cloudData) {
-      // Comparar timestamps para usar el más reciente
-      const localMeta = JSON.parse(localStorage.getItem(LS_META) || "{}");
-      const localTs   = localMeta.lastSave || 0;
-      const cloudTs   = cloudData._savedAt || 0;
+      const localMeta = (() => {
+        try { return JSON.parse(localStorage.getItem(LS_META) || "{}"); }
+        catch(_) { return {}; }
+      })();
+      const localTs = localMeta.lastSave || 0;
+      const cloudTs = cloudData._savedAt || 0;
 
       if (localTs > cloudTs) {
-        // Local es más reciente → subir a Firebase
-        console.log("CF: local más reciente, subiendo a Firebase...");
-        await saveToCloud({ ...S, _savedAt: Date.now() });
+        // Local más reciente → subir
+        await saveToCloud({ ...sanitizeForFirebase(S), _savedAt: Date.now() });
       } else {
-        // Firebase es más reciente → aplicar y sincronizar local
-        console.log("CF: Firebase más reciente, aplicando...");
+        // Cloud más reciente → aplicar
         applyData(cloudData);
         saveLocal(S);
         render();
       }
     } else {
-      // Primera vez → subir estado actual a Firebase
-      await saveToCloud({ ...S, _savedAt: Date.now() });
+      // Primera vez en Firebase
+      await saveToCloud({ ...sanitizeForFirebase(S), _savedAt: Date.now() });
     }
     SYNC_STATUS = "ok";
   } catch (e) {
-    console.error("CF Firebase load error:", e);
+    console.error("CF: error Firebase load:", e.code || e.message);
     FIREBASE_OK = false;
     SYNC_STATUS  = "local";
   }
@@ -137,15 +196,11 @@ async function loadFromCloud() {
 }
 
 // ================================================================
-//  save() — SIN if(!usuarioActual). Guarda SIEMPRE.
+//  save() — guarda siempre, sin condiciones
 // ================================================================
-
 function save() {
-  // CAPA 1: localStorage inmediato, sin condiciones
   saveLocal(S);
   updateSyncDot();
-
-  // CAPA 2: Firebase con debounce (solo si hay sesión activa)
   if (usuarioActual && FIREBASE_OK) {
     if (SAVE_TIMER) clearTimeout(SAVE_TIMER);
     SAVE_TIMER = setTimeout(() => saveToCloud(S), 1500);
@@ -155,17 +210,15 @@ function save() {
 // ================================================================
 //  INDICADOR VISUAL
 // ================================================================
-
 function updateSyncDot() {
   const dot = document.getElementById("sync-dot");
   const lbl = document.getElementById("sync-lbl");
   if (!dot || !lbl) return;
-
   const cfg = {
-    local:   { cls: "",         txt: "Local ✓",        color: "var(--pos)"  },
-    syncing: { cls: " syncing", txt: "Guardando…",     color: "var(--warn)" },
-    ok:      { cls: "",         txt: "Guardado ✓",      color: "var(--pos)"  },
-    err:     { cls: " err",     txt: "Solo local",      color: "var(--warn)" },
+    local:   { cls: "",         txt: "Local ✓",     color: "var(--pos)"  },
+    syncing: { cls: " syncing", txt: "Guardando…",  color: "var(--warn)" },
+    ok:      { cls: "",         txt: "Guardado ✓",   color: "var(--pos)"  },
+    err:     { cls: " err",     txt: "Solo local",   color: "var(--warn)" },
   };
   const c = cfg[SYNC_STATUS] || cfg.local;
   dot.className   = "sync-dot" + c.cls;
@@ -176,40 +229,34 @@ function updateSyncDot() {
 // ================================================================
 //  OBSERVER DE AUTENTICACIÓN
 // ================================================================
-
 auth.onAuthStateChanged(async (user) => {
+  const loadingSub = document.getElementById("loading-sub");
+  if (loadingSub) loadingSub.textContent = user ? "Sincronizando datos…" : "Cargando datos locales…";
+
   document.getElementById("loading").style.display = "none";
 
   if (user) {
-    // ── Con login ─────────────────────────────────────────
     usuarioActual = user;
+    loginAttempts = 0; // reset contador al loguearse exitosamente
+
     document.getElementById("loginForm").style.display = "none";
     document.getElementById("app").style.display       = "block";
 
-    // Datos locales ya están aplicados desde boot().
-    // Ahora sincronizar con Firebase.
     await loadFromCloud();
     render();
-
   } else {
-    // ── Sin login — MODO LOCAL COMPLETO ───────────────────
     usuarioActual = null;
     FIREBASE_OK   = false;
     SYNC_STATUS   = "local";
 
-    // NO limpiar S ni datos.
-    // Mostrar app directamente si hay datos locales.
     const localData = loadLocal();
-
     if (localData) {
-      // Hay datos locales → mostrar app, no pedir login
       document.getElementById("loginForm").style.display = "none";
       document.getElementById("app").style.display       = "block";
       applyData(localData);
       render();
       updateSyncDot();
     } else {
-      // Sin datos locales → pedir login para bajar de Firebase
       document.getElementById("loginForm").style.display = "block";
       document.getElementById("app").style.display       = "none";
     }
@@ -217,22 +264,83 @@ auth.onAuthStateChanged(async (user) => {
 });
 
 // ================================================================
-//  LOGIN / LOGOUT
+//  LOGIN con rate limiting
 // ================================================================
-
 function login() {
-  const email = document.getElementById("email").value.trim();
-  const pass  = document.getElementById("password").value;
   const errEl = document.getElementById("loginError");
-  if (!email || !pass) { errEl.textContent = "Completá todos los campos"; return; }
+
+  // Verificar bloqueo por intentos fallidos
+  if (loginLockedAt) {
+    const elapsed = Date.now() - loginLockedAt;
+    if (elapsed < LOGIN_LOCKOUT_MS) {
+      const restantes = Math.ceil((LOGIN_LOCKOUT_MS - elapsed) / 1000);
+      errEl.textContent = `Demasiados intentos. Esperá ${restantes}s.`;
+      return;
+    } else {
+      loginLockedAt  = null;
+      loginAttempts  = 0;
+    }
+  }
+
+  // BUG FIX: obtener valores DENTRO de la función, no en el scope superior
+  const emailEl = document.getElementById("email");
+  const passEl  = document.getElementById("password");
+  if (!emailEl || !passEl) return;
+
+  const email = emailEl.value.trim();
+  const pass  = passEl.value;
+
+  if (!email || !pass) {
+    errEl.textContent = "Completá todos los campos";
+    return;
+  }
+
+  // Validación básica de formato email
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    errEl.textContent = "Ingresá un email válido";
+    return;
+  }
+
   errEl.textContent = "Ingresando…";
+  errEl.style.color = "var(--warn)";
+
+  // Deshabilitar botón durante el intento
+  const btn = document.getElementById("btnLogin");
+  if (btn) { btn.disabled = true; btn.textContent = "Ingresando…"; }
+
   auth.signInWithEmailAndPassword(email, pass)
-    .then(() => { errEl.textContent = ""; })
-    .catch(() => { errEl.textContent = "Email o contraseña incorrectos"; });
+    .then(() => {
+      errEl.textContent = "";
+      loginAttempts = 0;
+      if (btn) { btn.disabled = false; btn.textContent = "Ingresar"; }
+      // Limpiar el campo de contraseña por seguridad
+      if (passEl) passEl.value = "";
+    })
+    .catch((e) => {
+      loginAttempts++;
+      if (btn) { btn.disabled = false; btn.textContent = "Ingresar"; }
+
+      if (loginAttempts >= LOGIN_MAX_ATTEMPTS) {
+        loginLockedAt = Date.now();
+        errEl.textContent = `Demasiados intentos. Esperá 60 segundos.`;
+      } else {
+        // No revelar si es email o contraseña incorrecto (seguridad)
+        errEl.textContent = "Credenciales incorrectas";
+      }
+      errEl.style.color = "var(--neg)";
+    });
 }
 
+// ================================================================
+//  LOGOUT seguro
+// ================================================================
 function logout() {
-  saveLocal(S);  // guardar antes de salir
+  // Guardar estado antes de cerrar sesión
+  if (SAVE_TIMER) clearTimeout(SAVE_TIMER);
+  saveLocal(S);
+  // Limpiar estado de sesión
+  usuarioActual = null;
+  FIREBASE_OK   = false;
   auth.signOut();
 }
 
@@ -247,36 +355,35 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btn) btn.addEventListener("click", login);
 });
 
-// ── Guardar al cerrar/recargar ────────────────────────────
-function flushPendingInput() {
-  if (document.activeElement instanceof HTMLElement) {
-    document.activeElement.blur();
+// ── Guardar al cerrar/recargar (flush de inputs activos) ──
+function flushAndSave() {
+  // Forzar blur del elemento activo para capturar su valor
+  if (document.activeElement && document.activeElement !== document.body) {
+    try { document.activeElement.blur(); } catch(_) {}
   }
   if (SAVE_TIMER) clearTimeout(SAVE_TIMER);
-  save();
-}
-window.addEventListener("beforeunload", flushPendingInput);
-window.addEventListener("pagehide", flushPendingInput);
-
-// ── Autosave cada 60 segundos ─────────────────────────────
-setInterval(() => {
   saveLocal(S);
-  console.log("CF autosave:", new Date().toLocaleTimeString("es-AR"));
-}, 60000);
+}
+window.addEventListener("beforeunload", flushAndSave);
+window.addEventListener("pagehide",     flushAndSave);
+
+// ── Autosave periódico (red de seguridad) ────────────────
+setInterval(() => { saveLocal(S); }, 60000);
+
+// ── Visibilidad: guardar al ocultar la pestaña ───────────
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) saveLocal(S);
+});
 
 // ================================================================
-//  BOOT — carga datos locales ANTES de que Firebase responda
+//  BOOT — carga local ANTES de que Firebase responda
 // ================================================================
-function boot() {
+(function boot() {
+  const sub = document.getElementById("loading-sub");
+  if (sub) sub.textContent = "Cargando datos…";
   const localData = loadLocal();
   if (localData) {
     applyData(localData);
-    console.log("CF: estado local restaurado");
   }
-  // onAuthStateChanged maneja el resto
-}
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", boot);
-} else {
-  boot();
-}
+  // onAuthStateChanged toma el control del flujo
+})();
