@@ -189,14 +189,14 @@ function buildDashboard(t) {
 
   // KPIs
   const kpis = [
-    { lbl:"Ingresos Totales",  val:t.totalIng,    cls:"pos", variant:"kpi-pos" },
-    { lbl:"Gastos Personales", val:t.totalGP,     cls:"neg", variant:"kpi-neg" },
-    { lbl:"Gastos Local",      val:t.totalGL,     cls:"neg", variant:"kpi-neg" },
-    { lbl:"Resultado Neto",    val:t.neto,        cls:t.neto>=0?"pos":"neg", variant:t.neto>=0?"kpi-pos":"kpi-neg" },
-    { lbl:"Dinero Líquido",    val:t.liquido,     cls:"neu", variant:"kpi-neu" },
-    { lbl:"Total Pagado",      val:t.totalPagado, cls:"yel", variant:"kpi-warn" },
-    { lbl:"Pendiente Gastos",  val:t.totalPend,   cls:"neg", variant:"kpi-neg" },
-    { lbl:"Por Acreditar",     val:pendTarjeta,   cls:"pur", variant:"kpi-pur" },
+    { lbl:"Ingresos Totales",   val:t.totalIng,      cls:"pos",  variant:"kpi-pos" },
+    { lbl:"Gastos Personales",  val:t.totalGP,       cls:"neg",  variant:"kpi-neg" },
+    { lbl:"Gastos Local",       val:t.totalGL,       cls:"neg",  variant:"kpi-neg" },
+    { lbl:"Resultado Neto",     val:t.neto,          cls:t.neto>=0?"pos":"neg", variant:t.neto>=0?"kpi-pos":"kpi-neg" },
+    { lbl:"Saldo en Cuentas",   val:t.totalCuentas,  cls:"pur",  variant:"kpi-pur" },
+    { lbl:"Dinero Líquido",     val:t.liquido,       cls:"neu",  variant:"kpi-neu" },
+    { lbl:"Total Pagado",       val:t.totalPagado,   cls:"yel",  variant:"kpi-warn" },
+    { lbl:"Pendiente Gastos",   val:t.totalPend,     cls:"neg",  variant:"kpi-neg" },
   ];
   d.appendChild(h("div", { class:"kpi-grid" },
     ...kpis.map(k => h("div", { class:`kpi ${k.variant}`, role:"status" },
@@ -226,10 +226,14 @@ function buildDashboard(t) {
 
   const topGP   = calcTop(S.gp, "cat");
   const topGL   = calcTop(S.gl, "cat");
-  const ingRows = S.ing.map(r => ({
-    canal: r.canal,
-    v: mr.reduce((s,m) => s+(r.vals[S.months.indexOf(m)]||0), 0)
-  })).filter(x => x.v > 0);
+
+  // Separar ventas de cuentas
+  const ingVentas  = S.ing.filter(r => !r.tipo || r.tipo === "venta")
+    .map(r => ({ canal:r.canal, v:mr.reduce((s,m)=>s+(r.vals[S.months.indexOf(m)]||0),0) }))
+    .filter(x => x.v > 0);
+  const ingCuentas = S.ing.filter(r => r.tipo === "cuenta")
+    .map(r => ({ canal:r.canal, v:mr.reduce((s,m)=>s+(r.vals[S.months.indexOf(m)]||0),0) }))
+    .filter(x => x.v > 0);
 
   const urgentes = chequesUrgentes();
   const proj     = cuponesProjection().filter(c => !c.acreditado).slice(0, 8);
@@ -248,7 +252,27 @@ function buildDashboard(t) {
 
   grid.appendChild(listCard("📈 Top Gastos Personales", topGP, "neg"));
   grid.appendChild(listCard("🏪 Top Gastos Local",      topGL, "neg"));
-  grid.appendChild(listCard("💰 Ingresos por Canal",    ingRows, "pos"));
+
+  // Card ingresos: ventas + cuentas juntas
+  grid.appendChild(h("div", { class:"card" },
+    h("div", { class:"sec-title" }, "💰 Ingresos & Cuentas"),
+    ingVentas.length > 0
+      ? ingVentas.map(r => h("div", { class:"mini-row" },
+          h("span", { class:"mini-row-label" }, r.canal),
+          h("span", { class:"mini-row-val pos" }, fmt(r.v))
+        ))
+      : [h("div",{class:"empty-state"},h("div",{class:"empty-state-text"},"Sin ventas para el período"))],
+    ingCuentas.length > 0
+      ? [
+          h("div", { class:"divider" }),
+          h("div", {style:{fontSize:"10px",color:"var(--pur)",fontWeight:"600",textTransform:"uppercase",letterSpacing:".4px",margin:"4px 0"}},"🏦 Saldo en cuentas"),
+          ...ingCuentas.map(r => h("div", { class:"mini-row" },
+            h("span", { class:"mini-row-label" }, r.canal),
+            h("span", { class:"mini-row-val pur" }, fmt(r.v))
+          ))
+        ]
+      : []
+  ));
 
   // eCheques resumen
   const allCheques = S.echeques.map(e => ({
@@ -593,49 +617,91 @@ function buildGL() {
 // ════════════════════════════════════════════════════════════
 function buildIng() {
   const mr = mesesRange();
-  const d  = h("div", { class:"card" });
-  d.appendChild(h("div", { class:"sec-header" },
-    h("div", { class:"sec-header-text" },
-      h("div", { class:"sec-header-title" }, "💰 Ingresos — " + S.mes),
-      h("div", { class:"sec-header-sub" }, "↑↓ reordenar filas · cupones acreditados se suman a Tarjeta/QR")
-    )
-  ));
+  const d  = h("div", null);
 
-  const wrap = h("div", { class:"tbl-wrap" });
-  const tbl  = h("table", { role:"grid" });
-  const headTr = h("tr", null, h("th", { style:{ width:"28px" } }, ""), h("th", { style:{ minWidth:"180px" } }, "Canal"));
-  mr.forEach(m => headTr.appendChild(h("th", { class:"ta-right", style:{ minWidth:"120px" } }, m)));
-  headTr.appendChild(h("th", { class:"ta-right", style:{ minWidth:"110px" } }, "Total"));
-  tbl.appendChild(h("thead", null, headTr));
+  // Separar canales por tipo
+  const ventas  = S.ing.filter(r => !r.tipo || r.tipo === "venta");
+  const cuentas = S.ing.filter(r => r.tipo === "cuenta");
 
-  const tbody = h("tbody", null);
-  S.ing.forEach((r, ri) => {
-    const isSueldo = r.canal === "Sueldo YPF";
-    const tr = h("tr", null,
-      h("td", null, mkMoveButtons(S.ing, ri, null, render)),
-      h("td", { style:{ fontWeight:"500", color:isSueldo?"var(--warn)":"var(--txt)" } }, r.canal)
+  // ── Helper: tabla de filas ──────────────────────────────
+  const buildIngTable = (rows, startIdx) => {
+    const wrap = h("div", { class:"tbl-wrap" });
+    const tbl  = h("table", { role:"grid" });
+    const headTr = h("tr", null,
+      h("th", { style:{ width:"28px" } }, ""),
+      h("th", { style:{ minWidth:"180px" } }, "Canal / Cuenta")
     );
-    let rowTotal = 0;
+    mr.forEach(m => headTr.appendChild(h("th", { class:"ta-right", style:{ minWidth:"120px" } }, m)));
+    headTr.appendChild(h("th", { class:"ta-right", style:{ minWidth:"110px" } }, "Total"));
+    tbl.appendChild(h("thead", null, headTr));
+
+    const tbody = h("tbody", null);
+    rows.forEach((r) => {
+      // Índice real en S.ing
+      const ri = S.ing.indexOf(r);
+      const isCuenta = r.tipo === "cuenta";
+      const tr = h("tr", null,
+        h("td", null, mkMoveButtons(S.ing, ri, null, render)),
+        h("td", { style:{ fontWeight:"500", color: isCuenta ? "var(--pur)" : "var(--txt)" } }, r.canal)
+      );
+      let rowTotal = 0;
+      mr.forEach(m => {
+        const i = S.months.indexOf(m);
+        const v = r.vals[i] || 0;
+        rowTotal += v;
+        const inp = h("input", { type:"number", class:"cell", value:v||"", placeholder:"0" });
+        on(inp, "input", e => { S.ing[ri].vals[i] = pn(e.target.value); save(); });
+        tr.appendChild(h("td", { class:"ta-right" }, inp));
+      });
+      tr.appendChild(h("td", { class:"ta-right", style:{ fontWeight:"700", color: isCuenta ? "var(--pur)" : "var(--pos)" } }, fmt(rowTotal)));
+      tbody.appendChild(tr);
+    });
+
+    // Fila total de la sección
+    const totalTr = h("tr", { class:"total-row" }, h("td",null,""), h("td",null,"TOTAL"));
     mr.forEach(m => {
       const i = S.months.indexOf(m);
-      const v = r.vals[i] || 0;
-      rowTotal += v;
-      const inp = h("input", { type:"number", class:"cell", value:v||"", placeholder:"0" });
-      on(inp, "input", e => { S.ing[ri].vals[i] = pn(e.target.value); save(); });
-      tr.appendChild(h("td", { class:"ta-right" }, inp));
+      totalTr.appendChild(h("td",{class:"ta-right"},fmt(rows.reduce((s,r)=>s+(r.vals[i]||0),0))));
     });
-    tr.appendChild(h("td", { class:"ta-right", style:{ fontWeight:"700", color:"var(--pos)" } }, fmt(rowTotal)));
-    tbody.appendChild(tr);
-  });
+    totalTr.appendChild(h("td",{class:"ta-right"},fmt(rows.reduce((s,r)=>s+mr.reduce((ss,m)=>ss+(r.vals[S.months.indexOf(m)]||0),0),0))));
+    tbody.appendChild(totalTr);
+    tbl.appendChild(tbody); wrap.appendChild(tbl);
+    return wrap;
+  };
 
-  const totalTr = h("tr", { class:"total-row" }, h("td",null,""), h("td",null,"TOTAL"));
-  mr.forEach(m => {
-    const i = S.months.indexOf(m);
-    totalTr.appendChild(h("td",{class:"ta-right"},fmt(S.ing.reduce((s,r)=>s+(r.vals[i]||0),0))));
-  });
-  totalTr.appendChild(h("td",{class:"ta-right"},fmt(S.ing.reduce((s,r)=>s+mr.reduce((ss,m)=>ss+(r.vals[S.months.indexOf(m)]||0),0),0))));
-  tbody.appendChild(totalTr);
-  tbl.appendChild(tbody); wrap.appendChild(tbl); d.appendChild(wrap);
+  // ── Sección Ventas ───────────────────────────────────────
+  const cardVentas = h("div", { class:"card" });
+  cardVentas.appendChild(h("div", { class:"sec-header" },
+    h("div", { class:"sec-header-text" },
+      h("div", { class:"sec-header-title" }, "💰 Ingresos por Venta — " + S.mes),
+      h("div", { class:"sec-header-sub" }, "↑↓ reordenar · cupones acreditados se suman a Tarjeta/QR")
+    )
+  ));
+  cardVentas.appendChild(buildIngTable(ventas));
+  d.appendChild(cardVentas);
+
+  // ── Sección Estado de Cuentas ────────────────────────────
+  const cardCuentas = h("div", { class:"card" });
+  cardCuentas.appendChild(h("div", { class:"sec-header" },
+    h("div", { class:"sec-header-text" },
+      h("div", { class:"sec-header-title" }, "🏦 Estado de Cuentas — " + S.mes),
+      h("div", { class:"sec-header-sub" }, "Saldo disponible por cuenta · se integra al Dinero Líquido del Dashboard")
+    )
+  ));
+  // Info box
+  const totalCuentas = cuentas.reduce((s,r) =>
+    s + mesesRange().reduce((ss,m) => ss+(r.vals[S.months.indexOf(m)]||0), 0), 0);
+  cardCuentas.appendChild(h("div", {
+    style:{ background:"var(--pur-bg)", border:"0.5px solid var(--pur-brd)",
+      borderRadius:"var(--rad)", padding:"var(--sp-3)", marginBottom:"var(--sp-4)",
+      display:"flex", alignItems:"center", justifyContent:"space-between" }},
+    h("span", { style:{ fontSize:"12px", color:"var(--pur)", fontWeight:"500" } },
+      "Saldo total disponible en cuentas"),
+    h("span", { style:{ fontSize:"18px", fontWeight:"800", color:"var(--pur)" } }, fmt(totalCuentas))
+  ));
+  cardCuentas.appendChild(buildIngTable(cuentas));
+  d.appendChild(cardCuentas);
+
   return d;
 }
 

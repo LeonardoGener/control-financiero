@@ -101,11 +101,21 @@ function calcTotals() {
     }, s), 0);
   };
 
-  const totalIng = sum(S.ing, (r, m, i) => pn(r.vals?.[i]));
-  const totalGP  = sum(S.gp,  (r, m, i) => pn(r.vals?.[i]));
-  const totalGL  = sum(S.gl,  (r, m, i) => {
+  // Ventas: canales tipo "venta" (o sin tipo, para compatibilidad con datos viejos)
+  const totalIng = sum(S.ing, (r, m, i) =>
+    (!r.tipo || r.tipo === "venta") ? pn(r.vals?.[i]) : 0
+  );
+
+  // Estado de cuentas: canales tipo "cuenta"
+  const totalCuentas = sum(S.ing, (r, m, i) =>
+    r.tipo === "cuenta" ? pn(r.vals?.[i]) : 0
+  );
+
+  const totalGP = sum(S.gp, (r, m, i) => pn(r.vals?.[i]));
+  const totalGL = sum(S.gl, (r, m, i) => {
     let v = pn(r.vals?.[i]);
-    if (r.cat === "Sueldo Brunella") v = Math.max(0, v - pn(bd[m]));
+    if (r.cat === "Sueldo Brunella" || r.cat === "Sueldo Brunella — Total Mensual")
+      v = Math.max(0, v - pn(bd[m]));
     return v;
   });
 
@@ -115,7 +125,8 @@ function calcTotals() {
   });
   const pagadoGL = sum(S.gl, (r, m, i) => {
     let v = pn(r.vals?.[i]);
-    if (r.cat === "Sueldo Brunella") v = Math.max(0, v - pn(bd[m]));
+    if (r.cat === "Sueldo Brunella" || r.cat === "Sueldo Brunella — Total Mensual")
+      v = Math.max(0, v - pn(bd[m]));
     return (S.spGL[r.cat]?.[m] === "PAGADO") ? v : 0;
   });
 
@@ -123,10 +134,15 @@ function calcTotals() {
   const totalPend   = (totalGP + totalGL) - totalPagado;
 
   return {
-    totalIng, totalGP, totalGL,
+    totalIng,
+    totalCuentas,
+    totalGP,
+    totalGL,
     neto:        totalIng - totalGP - totalGL,
-    liquido:     totalIng - totalPagado,
-    totalPagado, totalPend,
+    // Dinero líquido = ingresos - pagado + saldo disponible en cuentas
+    liquido:     totalIng - totalPagado + totalCuentas,
+    totalPagado,
+    totalPend,
   };
 }
 

@@ -326,13 +326,25 @@ const INIT_GL = [
 ];
 
 // ================================================================
-//  INGRESOS — 13 meses (Jun-26 en $0, para cargar)
+//  INGRESOS — 13 meses
+//  Estructura: canales de venta + estado de cuentas bancarias
+//  Estado de cuentas = saldo disponible por cuenta
+//  Se integra al cálculo de Dinero Líquido en el dashboard
 // ================================================================
 const INIT_ING = [
-  {canal:"Ventas Mostrador",  vals:[116540,2862800,1079812,290980,418321,480015,423270,1315382,2677930,0,0,0, 0]},
-  {canal:"Ventas Tarjeta/QR", vals:[1223080,2196750,1933962,2548050,2575630,1650010,1158200,2732965,2218461,0,0,0, 0]},
-  {canal:"Otros Ingresos",    vals:[0,0,0,0,0,0,0,0,0,0,0,0, 0]},
-  {canal:"Sueldo YPF",        vals:[0,0,0,0,0,0,0,0,0,0,0,0, 0]},
+  // ── Ventas ────────────────────────────────────────────────
+  {canal:"Ventas Mostrador",  tipo:"venta",  vals:[116540,2862800,1079812,290980,418321,480015,423270,1315382,2677930,0,0,0, 0]},
+  {canal:"Ventas Tarjeta/QR", tipo:"venta",  vals:[1223080,2196750,1933962,2548050,2575630,1650010,1158200,2732965,2218461,0,0,0, 0]},
+  {canal:"Otros Ingresos",    tipo:"venta",  vals:[0,0,0,0,0,0,0,0,0,0,0,0, 0]},
+  {canal:"Sueldo YPF",        tipo:"venta",  vals:[0,0,0,0,0,0,0,0,0,0,0,0, 0]},
+
+  // ── Estado de Cuentas — saldo disponible por cuenta ───────
+  // Se actualiza manualmente cada mes con el saldo real
+  // Se incluye en el cálculo de Dinero Líquido
+  {canal:"MP Leo",    tipo:"cuenta", vals:[0,0,0,0,0,0,0,0,0,0,0,0, 0]},
+  {canal:"MP Carla",  tipo:"cuenta", vals:[0,0,0,0,0,0,0,0,0,0,0,0, 0]},
+  {canal:"BBVA Carla",tipo:"cuenta", vals:[0,0,0,0,0,0,0,0,0,0,0,0, 0]},
+  {canal:"BPN Carla", tipo:"cuenta", vals:[0,0,0,0,0,0,0,0,0,0,0,0, 0]},
 ];
 
 // ================================================================
