@@ -167,6 +167,7 @@ function startRealtimeListener() {
     } else if (cloudTs > localTs) {
       // Cloud es más reciente → aplicar sin triggear otro save
       applyData(cloudData);
+      migrateState();   // asegura campos nuevos sin perder datos
       saveLocal(S);
       render();
     }
@@ -263,6 +264,7 @@ auth.onAuthStateChanged(async (user) => {
       document.getElementById("loginForm").style.display = "none";
       document.getElementById("app").style.display       = "block";
       applyData(localData);
+      migrateState();   // asegura campos nuevos sin perder datos
       render();
       updateSyncDot();
     } else {
@@ -366,6 +368,29 @@ setInterval(() => {
   saveLocal(S);
   if (usuarioActual && FIREBASE_OK) saveToCloud(S);
 }, 60000);
+
+
+// ================================================================
+//  MIGRACIÓN DE ESTADO — agrega campos nuevos sin borrar datos
+// ================================================================
+function migrateState() {
+  let changed = false;
+
+  // Asignar tipo "venta" a canales sin tipo
+  S.ing.forEach(r => { if (!r.tipo) { r.tipo = "venta"; changed = true; } });
+
+  // Agregar cuentas si no existen
+  const CUENTAS = ["MP Leo","MP Carla","BBVA Carla","BPN Carla"];
+  CUENTAS.forEach(nombre => {
+    if (!S.ing.find(r => r.canal === nombre)) {
+      S.ing.push({ canal:nombre, tipo:"cuenta", vals:Array(S.months.length).fill(0) });
+      changed = true;
+    }
+  });
+
+  // Si hubo cambios, guardar para que Firebase se actualice
+  if (changed) saveLocal(S);
+}
 
 // ================================================================
 //  BOOT — carga local antes de que Firebase responda

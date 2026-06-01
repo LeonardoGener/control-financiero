@@ -492,6 +492,7 @@ function applyData(data) {
   ensureVals(S.gp,  S.months.length);
   ensureVals(S.gl,  S.months.length);
   ensureVals(S.ing, S.months.length);
+
 }
 
 // ── Agregar mes nuevo ─────────────────────────────────────
